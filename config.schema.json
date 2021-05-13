@@ -1,16 +1,52 @@
 {
-  "pluginAlias": "ExampleHomebridgePlugin",
+  "pluginAlias": "Sp108e",
   "pluginType": "platform",
   "singular": true,
   "schema": {
     "type": "object",
     "properties": {
-      "name": {
-        "title": "Name",
-        "type": "string",
-        "required": true,
-        "default": "Example Dynamic Platform"
+      "controllers": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "displayName": { "type": "string", "title": "Display Name", "required": true, "placeholder": "Light" },
+            "address": { "type": "string", "title": "Address", "required": true, "placeholder": "192.168.1.123" },
+            "port": { "type": "number", "title": "Port", "required": false, "default": 8189, "placeholder": "8189" },
+            "rgb": { "type": "boolean", "title": "Is RGB", "required": true, "default": false }
+          }
+        }
       }
     }
+  },
+  "layout": [
+    { "key": "controllers",
+      "type": "array",
+      "listItems": 1,
+      "items": [ {
+        "type": "div",
+        "displayFlex": true,
+        "flex-direction": "row",
+        "items": [
+          { "key": "controllers[].displayName", "flex": "4 4 200px",
+            "notitle": true, "placeholder": "Light"
+          },
+          { "key": "controllers[].address", "flex": "4 4 200px",
+            "notitle": true, "placeholder": "Address"
+          },
+          { "key": "controllers[].port", "flex": "2 2 50px",
+            "notitle": true, "placeholder": "Port"
+          },
+          { "key": "controllers[].rgb", "flex": "2 2 50px",
+            "notitle": true, "placeholder": "RGB"
+          }
+        ]
+      } ]
+    }
+  ],
+  "data": {
+    "controllers": [
+      { "displayName": "Office LED", "address": "192.168.2.21", "port": "8189" }
+    ]
   }
 }

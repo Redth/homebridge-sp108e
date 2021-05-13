@@ -1,34 +1,48 @@
-import { Service, PlatformAccessory, CharacteristicValue } from 'homebridge';
+import { Service, PlatformAccessory, CharacteristicValue, Nullable } from 'homebridge';
 
-import { ExampleHomebridgePlatform } from './platform';
+import { Sp108eControllerPlatform as Sp108eControllerPlatform } from './platform';
+
+import { Sp108e } from 'sp108e_raw';
+
+import { Mutex } from 'async-mutex';
+import { ConsoleUtil } from './consoleUtil';
+
+/* eslint-disable */
+const convert = require('color-convert');
 
 /**
  * Platform Accessory
  * An instance of this class is created for each accessory your platform registers
  * Each accessory may expose multiple services of different service types.
  */
-export class ExamplePlatformAccessory {
+
+const sp108eMutex = new Mutex();
+
+export class Sp108eControllerAccessory {
   private service: Service;
 
-  /**
-   * These are just used to create a working example
-   * You should implement your own code to track the state of your accessory
-   */
-  private exampleStates = {
-    On: false,
-    Brightness: 100,
-  };
+  private pendingHueChange: boolean;
+  private pendingSaturationChange: boolean;
+  private pendingBrightnessChange: boolean;
+
+  public static sp108ePlatform: Sp108eControllerPlatform;
 
   constructor(
-    private readonly platform: ExampleHomebridgePlatform,
+    private readonly platform: Sp108eControllerPlatform,
     private readonly accessory: PlatformAccessory,
   ) {
 
+    this.pendingHueChange = false;
+    this.pendingSaturationChange = false;
+    this.pendingBrightnessChange = true;
+
+    Sp108eControllerAccessory.sp108ePlatform = platform;
+
     // set accessory information
     this.accessory.getService(this.platform.Service.AccessoryInformation)!
-      .setCharacteristic(this.platform.Characteristic.Manufacturer, 'Default-Manufacturer')
-      .setCharacteristic(this.platform.Characteristic.Model, 'Default-Model')
-      .setCharacteristic(this.platform.Characteristic.SerialNumber, 'Default-Serial');
+      .setCharacteristic(this.platform.Characteristic.Manufacturer, 'BTF Lighting')
+      .setCharacteristic(this.platform.Characteristic.Model, 'SP108E')
+      .setCharacteristic(this.platform.Characteristic.SerialNumber, 'btf-sp108e');
 
     // get the LightBulb service if it exists, otherwise create a new LightBulb service
     // you can create multiple services for each accessory
@@ -36,7 +50,7 @@ export class ExamplePlatformAccessory {
 
     // set the service name, this is what is displayed as the default name on the Home app
     // in this example we are using the name we stored in the `accessory.context` in the `discoverDevices` method.
-    this.service.setCharacteristic(this.platform.Characteristic.Name, accessory.context.device.exampleDisplayName);
+    this.service.setCharacteristic(this.platform.Characteristic.Name, accessory.context.config.displayName);
 
     // each service must implement at-minimum the "required characteristics" for the given service type
     // see https://developers.homebridge.io/#/service/Lightbulb
@@ -48,94 +62,178 @@ export class ExamplePlatformAccessory {
 
     // register handlers for the Brightness Characteristic
     this.service.getCharacteristic(this.platform.Characteristic.Brightness)
-      .onSet(this.setBrightness.bind(this));       // SET - bind to the 'setBrightness` method below
+      .onSet(this.setBrightness.bind(this))        // SET - bind to the 'setBrightness` method below
+      .onGet(this.getBrightness.bind(this));       // GET
 
-    /**
-     * Creating multiple services of the same type.
-     *
-     * To avoid "Cannot add a Service with the same UUID another Service without also defining a unique 'subtype' property." error,
-     * when creating multiple services of the same type, you need to use the following syntax to specify a name and subtype id:
-     * this.accessory.getService('NAME') || this.accessory.addService(this.platform.Service.Lightbulb, 'NAME', 'USER_DEFINED_SUBTYPE_ID');
-     *
-     * The USER_DEFINED_SUBTYPE must be unique to the platform accessory (if you platform exposes multiple accessories, each accessory
-     * can use the same sub type id.)
-     */
+    this.service.getCharacteristic(this.platform.Characteristic.Hue)
+      .onSet(this.setHue.bind(this))
+      .onGet(this.getHue.bind(this));
 
-    // Example: add two "motion sensor" services to the accessory
-    const motionSensorOneService = this.accessory.getService('Motion Sensor One Name') ||
-      this.accessory.addService(this.platform.Service.MotionSensor, 'Motion Sensor One Name', 'YourUniqueIdentifier-1');
-
-    const motionSensorTwoService = this.accessory.getService('Motion Sensor Two Name') ||
-      this.accessory.addService(this.platform.Service.MotionSensor, 'Motion Sensor Two Name', 'YourUniqueIdentifier-2');
-
-    /**
-     * Updating characteristics values asynchronously.
-     *
-     * Example showing how to update the state of a Characteristic asynchronously instead
-     * of using the `on('get')` handlers.
-     * Here we change update the motion sensor trigger states on and off every 10 seconds
-     * the `updateCharacteristic` method.
-     *
-     */
-    let motionDetected = false;
-    setInterval(() => {
-      // EXAMPLE - inverse the trigger
-      motionDetected = !motionDetected;
-
-      // push the new value to HomeKit
-      motionSensorOneService.updateCharacteristic(this.platform.Characteristic.MotionDetected, motionDetected);
-      motionSensorTwoService.updateCharacteristic(this.platform.Characteristic.MotionDetected, !motionDetected);
-
-      this.platform.log.debug('Triggering motionSensorOneService:', motionDetected);
-      this.platform.log.debug('Triggering motionSensorTwoService:', !motionDetected);
-    }, 10000);
+    this.service.getCharacteristic(this.platform.Characteristic.Saturation)
+      .onSet(this.setSaturation.bind(this))
+      .onGet(this.getSaturation.bind(this));
   }
 
   /**
    * Handle "SET" requests from HomeKit
    * These are sent when the user changes the state of an accessory, for example, turning on a Light bulb.
    */
-  async setOn(value: CharacteristicValue) {
-    // implement your own code to turn your device on/off
-    this.exampleStates.On = value as boolean;
+  setOn(value: CharacteristicValue): Nullable<CharacteristicValue> {
+    this.platform.log.debug('Set Characteristic Requested: On ->', value);
 
-    this.platform.log.debug('Set Characteristic On ->', value);
+    let toUse = this.accessory.context.sp108e.on;
+
+    if (!value) {
+      toUse = this.accessory.context.sp108e.off;
+    }
+
+    sp108eMutex.runExclusive(async() => {
+      await toUse();
+      this.accessory.context.lastStatus.on = value;
+      this.service.updateCharacteristic(this.platform.Characteristic.On, value);
+      this.platform.log.debug('Set Characteristic On ->', value);
+    });
+
+    return this.accessory.context.lastStatus.on ?? false;
   }
 
-  /**
-   * Handle the "GET" requests from HomeKit
-   * These are sent when HomeKit wants to know the current state of the accessory, for example, checking if a Light bulb is on.
-   *
-   * GET requests should return as fast as possbile. A long delay here will result in
-   * HomeKit being unresponsive and a bad user experience in general.
-   *
-   * If your device takes time to respond you should update the status of your device
-   * asynchronously instead using the `updateCharacteristic` method instead.
+  getOn(): Nullable<CharacteristicValue> {
+    this.platform.log.debug('Get Characteristic Request: On...');
 
-   * @example
-   * this.service.updateCharacteristic(this.platform.Characteristic.On, true)
-   */
-  async getOn(): Promise<CharacteristicValue> {
     // implement your own code to check if the device is on
-    const isOn = this.exampleStates.On;
+    this.getStatus(this.accessory.context.sp108e).then(s => {
+      const isOn = s?.on ?? false;
+      this.service.updateCharacteristic(this.platform.Characteristic.On, isOn);
+      this.platform.log.debug('Got Characteristic On ->', isOn);
+    });
 
-    this.platform.log.debug('Get Characteristic On ->', isOn);
-
-    // if you need to return an error to show the device as "Not Responding" in the Home app:
-    // throw new this.platform.api.hap.HapStatusError(this.platform.api.hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE);
-
-    return isOn;
+    return this.accessory.context.lastStatus.on ?? false;
   }
 
-  /**
-   * Handle "SET" requests from HomeKit
-   * These are sent when the user changes the state of an accessory, for example, changing the Brightness
-   */
-  async setBrightness(value: CharacteristicValue) {
-    // implement your own code to set the brightness
-    this.exampleStates.Brightness = value as number;
+  private getHsv(hex: string): any
+  {
+    var hsv = convert.hex.hsv(hex);
 
-    this.platform.log.debug('Set Characteristic Brightness -> ', value);
+    return hsv;
   }
 
+  private getColorPart(part: string) : Nullable<CharacteristicValue> {
+    this.platform.log.debug('Get Characteristic Request: ' + part + '...');
+
+    var partIndex = 0; // hue
+    var partCharacteristic = this.platform.Characteristic.Hue;
+    if (part === 'saturation') {
+      partIndex = 1;
+      partCharacteristic = this.platform.Characteristic.Saturation;
+    } else if (part === 'brightness') {
+      partIndex = 2;
+      partCharacteristic = this.platform.Characteristic.Brightness;
+    }
+
+    const partValue = this.getHsv(this.accessory.context.lastStatus.color)[partIndex];
+
+    this.getStatus(this.accessory.context.sp108e).then(s => {
+      this.service.updateCharacteristic(partCharacteristic, partValue);
+      this.platform.log.debug('Get Characteristic ' + part + ' -> ', partValue);
+    });
+
+    return partValue ?? 0;
+  }
+
+  getHue(): Nullable<CharacteristicValue> {
+    return this.getColorPart('hue');
+  }
+
+  getSaturation(): Nullable<CharacteristicValue> {
+   return this.getColorPart('saturation');
+  }
+
+  getBrightness(): Nullable<CharacteristicValue> {
+    return this.getColorPart('brightness');
+  }
+
+  setHue(value: CharacteristicValue) : Nullable<CharacteristicValue> {
+    this.updateColorPart(this.accessory, value as number, 'hue');
+    return null;
+  }
+
+  setSaturation(value: CharacteristicValue) : Nullable<CharacteristicValue> {
+    this.updateColorPart(this.accessory, value as number, 'saturation');
+    return null;
+  }
+
+  setBrightness(value: CharacteristicValue) : Nullable<CharacteristicValue> {
+    this.updateColorPart(this.accessory, value as number, 'brightness');
+    return null;
+  }
+
+  updateColorPart(accessory: PlatformAccessory, value: number, part: string)
+  {
+    this.platform.log.debug('Set Characteristic Request: ' + part + ' -> ', value);
+
+    var hsv = convert.hex.hsv(accessory.context.lastStatus.color);
+
+    if (part === 'hue')
+    {
+      hsv[0] = value;
+      this.pendingHueChange = true;
+    }
+    else if (part === 'saturation')
+    {
+      hsv[1] = value;
+      this.pendingSaturationChange = true;
+    }
+    else if (part === 'brightness')
+    {
+      hsv[2] = value;
+      this.pendingBrightnessChange = true;
+    }
+
+    if (this.pendingBrightnessChange || (this.pendingHueChange || this.pendingSaturationChange))
+    {
+      accessory.context.lastStatus.color = convert.hsv.hex(hsv[0], hsv[1], hsv[2]);
+
+      var didChangeHue = this.pendingHueChange;
+      var didChangeSaturation = this.pendingSaturationChange;
+      var didChangeBrightness = this.pendingBrightnessChange;
+      
+      this.pendingBrightnessChange = false;
+      this.pendingHueChange = false;
+      this.pendingSaturationChange = false;
+
+      this.platform.log.info('Changing ' + accessory.displayName + ' color to -> ', accessory.context.lastStatus.color);
+
+      sp108eMutex.runExclusive(async() => {
+
+        ConsoleUtil.DisableLog();
+
+        await this.accessory.context.sp108e.setColor(accessory.context.lastStatus.color);
+
+        ConsoleUtil.EnableLog();
+
+        if (didChangeHue)
+          this.service.updateCharacteristic(this.platform.Characteristic.Hue, hsv[0]);
+        if (didChangeSaturation)
+          this.service.updateCharacteristic(this.platform.Characteristic.Saturation, hsv[1]);
+        if (didChangeBrightness)
+          this.service.updateCharacteristic(this.platform.Characteristic.Brightness, hsv[2]);
+      });
+    }
+  }
+
+  private async getStatus(sp: Sp108e): Promise<any>{
+    return await sp108eMutex.runExclusive(async () => {
+
+      if (this.accessory.context.lastStatus)
+        return this.accessory.context.lastStatus;
+
+      ConsoleUtil.DisableLog();
+      const status = await sp.getStatus();
+      ConsoleUtil.EnableLog();
+
+      this.accessory.context.lastStatus = status;
+
+      return status;
+    });
+  }
 }
