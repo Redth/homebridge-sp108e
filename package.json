@@ -2,7 +2,7 @@
   "private": false,
   "displayName": "HomeBridge SP108E",
   "name": "homebridge-sp108e",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "HomeBridge Plugin for the SP108E LED Controller",
   "license": "MIT",
   "repository": {
@@ -13,8 +13,8 @@
     "url": "https://github.com/redth/homebridge-sp108e/issues"
   },
   "engines": {
-    "node": ">=10.17.0",
-    "homebridge": ">=1.3.0"
+    "node": ">=14.14.0",
+    "homebridge": ">=1.3.9"
   },
   "main": "dist/index.js",
   "scripts": {
